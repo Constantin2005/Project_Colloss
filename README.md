@@ -3,6 +3,7 @@
 <div align = 'center'>
 
 # Colos
+(Это не оригинальный репозиторий. Ссылка на оригинал: https://github.com/s4lf3tk4/colos_docker.git)
 
 
 ### Описание работы
