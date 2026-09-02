@@ -1,16 +1,23 @@
 <?php
+require_once __DIR__ . '/../Service/TextAnalysis.php';
+
 
 class MessageProcess{
 
     private CommandHandler $commandHandler;
     private Logger $logger;
     private UserRepository $userRepository;
+    private array $commands; # свойство для хранения команд в классе
+
 
     public function __construct(CommandHandler $commandHandler, UserRepository $userRepository){
         $this->commandHandler = $commandHandler;
         $this->logger = new Logger('MessageProcess_error.log');
-        $this->userRepository = $userRepository;   
+        $this->userRepository = $userRepository;
+        $this->commands = require_once __DIR__ . '/../config/Commands.php';
+
     }
+
 
     public function handleMessage($data) : void{
         try {
@@ -18,10 +25,10 @@ class MessageProcess{
             $message = $data['object']['message']['text'] ?? '';
             $peer_id = $data['object']['message']['peer_id'] ?? 0;
             $attachments = $data['object']['message']['attachments'] ?? [];
-                
+
             if (($data['object']['message']['out'] ?? 0) === 1) {
                 echo('ok');
-                return; 
+                return;
             }
 
             if ($eventId && $this->isDuplicateEvent($eventId)) {
@@ -29,6 +36,7 @@ class MessageProcess{
                 return;
             }
 
+            // Если есть фото – обрабатываем как раньше
             if ($this->hasPhoto($attachments)) {
                 $user = new UserState($peer_id, $this->userRepository);
                 $userData = $user->handle();
@@ -47,10 +55,42 @@ class MessageProcess{
                     return;
                 }
             }
+            // ---- ТЕКСТОВЫЙ ВВОД ----
+            // Загружаем список команд
+            $commands = require_once __DIR__ . '/../config/Commands.php';
+            $lowerMessage = mb_strtolower(trim($message));
 
-            $this->commandHandler->handle($message, $peer_id);
+            // Если это известная команда – выполняем её
+            if (isset($commands[$lowerMessage])) {
+                $this->commandHandler->handle($message, $peer_id);
+                echo('ok');
+                return;
+            }
+
+            // Иначе – отправляем текст в нейросеть (с проверкой лимитов)
+            $user = new UserState($peer_id, $this->userRepository);
+            $userData = $user->handle();
+
+            if ($userData['requests'] > 0 || $userData['status'] === 'prem') {
+                // Создаём экземпляр TextAnalysis и отправляем запрос
+                require_once __DIR__ . '/../Service/TextAnalysis.php';
+                $textAnalysis = new TextAnalysis($message, $peer_id);
+                $result = $textAnalysis->getAnalysis();
+
+                // Отправляем ответ пользователю
+                SendResponse::vkSendMessage($peer_id, $result['text'], KeyboardBuilder::getMainMenuJson());
+
+                // Если пользователь гость – уменьшаем счётчик запросов
+                if ($userData['status'] === 'guest') {
+                   $user->decrementRequests();
+                }
+            } else {
+                $errorMessage = ServiceMessage::noRequestsErorrMessage();
+                SendResponse::vkSendMessage($peer_id, $errorMessage['text'], $errorMessage['keyboard']);
+            }
+
             echo('ok');
-            
+
         } catch (\Throwable $e) {
             $this->handleError($e, $peer_id ?? 0);
             echo('ok');
@@ -110,7 +150,7 @@ class MessageProcess{
         }
         return false;
     }
-    
+
     private function handleError($e, $peer_id = 0){
         $errorMessage = "Ошибка: " . $e->getMessage() . " в строке: " . $e->getLine();
         $this->log($errorMessage);
